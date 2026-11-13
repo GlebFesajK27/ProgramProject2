@@ -1,7 +1,192 @@
-<Solution>
-  <Configurations>
-    <Platform Name="x64" />
-    <Platform Name="x86" />
-  </Configurations>
-  <Project Path="program_project2/program_project2.vcxproj" Id="790aea64-4ddb-4ea3-b0c5-c3fc026080b7" />
-</Solution>
+/* Дослідити задану операцію над даними на різних обсягах даних, при різних політиках та за різних перетворень або предикатів(якщо доречно).А саме, дослідити:
+
+1) швидкодію бібліотечного алгоритму за відсутності політики;
+
+2) швидкодію бібліотечного алгоритму з різними політиками;
+
+3) швидкодію власного паралельного алгоритму за умови використання різної кількості 
+потоків, а саме : побудувати власний алгоритм, що розбиває вибірку на K приблизно однакових
+за довжиною частин, обробляє кожну частину в окремому потоці(послідовним бібліотечним
+алгоритмом), а потім зводить результат(послідовним бібліотечним алгоритмом).Вивести
+залежність часу роботи від значення параметра K.На якому K досягається найкраща
+швидкість ? Як це значення співвідноситься з кількістю потоків процесора ? За яким законом
+зростає час за збільшення K?
+
+    Код має виконувати відповідні експерименти та виводити час роботи(+щоб можна було
+    зрозуміти, що саме вимірювалось).Для власного алгоритму слід вивести дані у табличному
+    вигляді.Окремо вивести знайдене найкраще значення K та його співвідношення з кількістю
+    потоків процесора.
+
+    Дослідження виконувати виключно в режимі компіляції в режимі RELEASE.Дослідити
+    як залежить час від рівня оптимізації(без оптимізації та з максимальною).
+    Послідовності отримувати за допомогою засобів бібліотеки random.
+    Використовувати кілька послідовностей різних довжин, які згенерувати попередньо і
+    зберегти в текстових файлах.Для експериментів з різними режимами оброблення
+    використовувати однаковий набір послідовностей.
+
+
+
+    Фесай Глеб Павлович К-26
+    Варіант: 8) replace_if */
+
+
+
+#include <iostream>
+#include <vector>
+#include <random>
+#include <fstream>
+#include <chrono>
+#include <algorithm>
+#include <execution>
+#include <thread>
+#include <string>
+
+// Предикат для replace_if: замінюємо всі числа, більші за 500000
+
+auto predicate = [](int x) { return x > 500000; };
+const int REPLACEMENT_VALUE = -1;
+
+// Функція для вимірювання часу (повертає мілісекунди)
+template <typename Func>
+double measure_time(Func&& func) {
+    auto start = std::chrono::high_resolution_clock::now();
+    func();
+    auto end = std::chrono::high_resolution_clock::now();
+    return std::chrono::duration<double, std::milli>(end - start).count();
+}
+
+// Генерація даних у текстовий файл
+void generate_data_file(const std::string& filename, size_t size) {
+    std::ofstream out(filename);
+    if (!out) {
+        std::cerr << "Помилка створення файлу: " << filename << "\n";
+        return;
+    }
+    std::mt19937 gen(42); // Фіксований seed для відтворюваності
+    std::uniform_int_distribution<int> dist(1, 1000000);
+    for (size_t i = 0; i < size; ++i) {
+        out << dist(gen) << "\n";
+    }
+    out.close();
+    std::cout << "Файл " << filename << " згенеровано (" << size << " елементiв).\n";
+}
+
+// Зчитування даних з текстового файлу
+std::vector<int> read_data_file(const std::string& filename) {
+    std::vector<int> data;
+    std::ifstream in(filename);
+    int value;
+    while (in >> value) {
+        data.push_back(value);
+    }
+    return data;
+}
+
+// Власний паралельний алгоритм
+void custom_parallel_replace_if(std::vector<int>& data, int K) {
+    size_t n = data.size();
+    if (n == 0 || K <= 0) return;
+
+    if (K == 1) {
+        std::replace_if(data.begin(), data.end(), predicate, REPLACEMENT_VALUE);
+        return;
+    }
+
+    std::vector<std::thread> threads;
+    size_t chunk_size = n / K;
+    auto start_it = data.begin();
+
+    for (int i = 0; i < K; ++i) {
+        // Останній потік бере весь залишок
+        auto end_it = (i == K - 1) ? data.end() : start_it + chunk_size;
+
+        threads.emplace_back([start_it, end_it]() {
+            std::replace_if(start_it, end_it, predicate, REPLACEMENT_VALUE);
+            });
+        start_it = end_it;
+    }
+
+    // Зведення результатів (очікування завершення потоків)
+    for (auto& t : threads) {
+        if (t.joinable()) {
+            t.join();
+        }
+    }
+}
+
+void run_experiments(const std::string& filename) {
+    std::cout << "\n========================================\n";
+    std::cout << "Завантаження даних з " << filename << "...\n";
+    std::vector<int> original_data = read_data_file(filename);
+    std::cout << "Розмiр вибiрки: " << original_data.size() << " елементiв\n\n";
+
+    std::vector<int> test_data;
+
+    // 1. Стандартний алгоритм без політики
+    test_data = original_data;
+    double time_std = measure_time([&]() {
+        std::replace_if(test_data.begin(), test_data.end(), predicate, REPLACEMENT_VALUE);
+        });
+    std::cout << "1) Бiблiотечний алгоритм (без полiтики):   " << std::fixed << std::setprecision(2) << time_std << " мс\n";
+
+    // 2. Стандартний алгоритм з політиками (потребує C++17 та TBB)
+    test_data = original_data;
+    double time_seq = measure_time([&]() {
+        std::replace_if(std::execution::seq, test_data.begin(), test_data.end(), predicate, REPLACEMENT_VALUE);
+        });
+    std::cout << "2) Бiблiотечний алгоритм (std::execution::seq): " << time_seq << " мс\n";
+
+
+    // 3. Власний паралельний алгоритм
+    std::cout << "3) Власний паралельний алгоритм:\n";
+    std::cout << std::left << std::setw(10) << "Потоки (K)" << "| " << "Час роботи (мс)\n";
+    std::cout << "------------------------------\n";
+
+    std::vector<int> k_values = { 1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 64 };
+    double best_time = 1e9;
+    int best_k = 1;
+
+    for (int K : k_values) {
+        test_data = original_data;
+        double time_custom = measure_time([&]() {
+            custom_parallel_replace_if(test_data, K);
+            });
+
+        std::cout << std::left << std::setw(10) << K << "| " << time_custom << "\n";
+
+        if (time_custom < best_time) {
+            best_time = time_custom;
+            best_k = K;
+        }
+    }
+
+    unsigned int hw_threads = std::thread::hardware_concurrency();
+    std::cout << "------------------------------\n";
+    std::cout << "Найкращий час досягнуто при K = " << best_k << " (" << best_time << " мс)\n";
+    std::cout << "Кiлькiсть апаратних потокiв процесора: " << hw_threads << "\n";
+    std::cout << "Спiввiдношення найкращого K до апаратних потокiв: "
+        << std::fixed << std::setprecision(2) << (double)best_k / hw_threads << "\n";
+}
+
+int main() {
+
+    setlocale(LC_ALL, "uk_UA");
+
+    // Створення файлів різних розмірів (виконується один раз, далі можна закоментувати)
+    std::string file_small = "data_small.txt";
+    std::string file_medium = "data_medium.txt";
+    std::string file_large = "data_large.txt";
+
+    // Генеруємо файли, якщо вони не існують. 
+    // Розміри: 100 тисяч, 1 мільйон, 10 мільйонів
+    generate_data_file(file_small, 100000);
+    generate_data_file(file_medium, 1000000);
+    generate_data_file(file_large, 10000000);
+
+    // Дослідження на різних обсягах даних
+    run_experiments(file_small);
+    run_experiments(file_medium);
+    run_experiments(file_large);
+
+    return 0;
+}
